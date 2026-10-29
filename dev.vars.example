@@ -1,2 +1,0 @@
-JWT_SECRET=change-me-to-a-long-random-string-at-least-32-chars
-ADMIN_API_KEY=change-me-admin-key
