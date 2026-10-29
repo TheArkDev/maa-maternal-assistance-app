@@ -1,0 +1,14 @@
+name = "maa-api"
+main = "src/index.ts"
+compatibility_date = "2025-09-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "maa-db"
+# Run `wrangler d1 create maa-db` and paste the real id here.
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations"
+
+# Secrets (never commit): set with `wrangler secret put <NAME>`
+#   JWT_SECRET      long random string (>= 32 chars)
+#   ADMIN_API_KEY   platform-admin key, used only to verify facilities
