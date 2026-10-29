@@ -6,7 +6,7 @@ compatibility_date = "2025-09-01"
 binding = "DB"
 database_name = "maa-db"
 # Run `wrangler d1 create maa-db` and paste the real id here.
-database_id = "00000000-0000-0000-0000-000000000000"
+database_id = "74406c84-3cca-4033-a33d-135e8a30be4b"
 migrations_dir = "migrations"
 
 # Secrets (never commit): set with `wrangler secret put <NAME>`
