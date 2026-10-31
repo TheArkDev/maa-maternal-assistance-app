@@ -15,6 +15,9 @@ patientRoutes.get('/patients', async (c) => {
     .prepare(
       `SELECT m.id AS mother_id, u.full_name, u.phone, cl.facility_id, cl.assigned_staff_user_id,
               p.id AS pregnancy_id, p.due_date, p.lmp_date,
+              (SELECT MAX(visit_date) FROM visits WHERE pregnancy_id = p.id AND deleted_at IS NULL) AS last_visit_date,
+              (SELECT MIN(scheduled_at) FROM appointments
+                WHERE pregnancy_id = p.id AND deleted_at IS NULL AND status = 'scheduled' AND scheduled_at >= ?2) AS next_appointment_at,
               (SELECT risk_flag FROM (
                  SELECT risk_flag, measured_at AS t FROM vitals
                   WHERE pregnancy_id = p.id AND deleted_at IS NULL AND risk_flag IS NOT NULL
@@ -32,7 +35,7 @@ patientRoutes.get('/patients', async (c) => {
         WHERE cl.revoked_at IS NULL
         ORDER BY CASE latest_risk WHEN 'emergency' THEN 0 WHEN 'urgent' THEN 1 ELSE 2 END, p.due_date`,
     )
-    .bind(c.get('user').id)
+    .bind(c.get('user').id, now())
     .all();
   return c.json({ patients: results });
 });
