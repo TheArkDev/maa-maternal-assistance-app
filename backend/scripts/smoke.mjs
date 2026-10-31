@@ -137,6 +137,8 @@ r = await call('POST', `/patients/${motherId}/appointments`, { token: doc.access
 check('appointment created', r.status === 201, r);
 r = await call('GET', '/patients', { token: doc.access_token });
 check('patient list shows latest_risk=emergency', r.json?.patients?.[0]?.latest_risk === 'emergency', r.json?.patients);
+check('patient list reports last_visit_date', r.json?.patients?.[0]?.last_visit_date === '2026-10-28', r.json?.patients);
+check('patient list reports next_appointment_at (a number in the future)', typeof r.json?.patients?.[0]?.next_appointment_at === 'number' && r.json.patients[0].next_appointment_at > Date.now(), r.json?.patients);
 r = await call('GET', '/sync/pull?since=0', { token: mother.access_token });
 check('mother pulls the clinic visit and appointment', r.json?.visits?.length === 1 && r.json.appointments.length === 1, r);
 r = await call('POST', '/sync/push', { token: mother.access_token, body: { vitals: [{ id: uid(), pregnancy_id: pregId, measured_at: Date.now(), systolic: 120, diastolic: 80, updated_at: Date.now() }] } });
