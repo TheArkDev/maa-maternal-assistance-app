@@ -141,3 +141,97 @@ patientRoutes.post('/patients/:motherId/appointments', async (c) => {
   await audit(c.env.DB, { actor: staffId, action: 'create_appointment', facilityId, motherId, entity: 'appointment', entityId: id });
   return c.json({ id }, 201);
 });
+
+// ---- Editing a visit (medical report) ------------------------------------------------------------
+// Only staff of the facility that recorded the visit, while it still holds an active care link, may
+// edit it. The previous values are stored before every change, and each edit is audit-logged.
+
+const EDITABLE = ['visit_date', 'gestation_weeks', 'weight_kg', 'systolic', 'diastolic', 'fundal_height_cm', 'fetal_heart_rate', 'notes', 'next_visit_date'] as const;
+
+const visitPatchSchema = z
+  .object({
+    visit_date: z.string().regex(ISO_DATE).optional(),
+    gestation_weeks: z.number().int().min(0).max(45).nullable().optional(),
+    weight_kg: num(20, 250).nullable().optional(),
+    systolic: z.number().int().min(50).max(300).nullable().optional(),
+    diastolic: z.number().int().min(30).max(200).nullable().optional(),
+    fundal_height_cm: num(0, 60).nullable().optional(),
+    fetal_heart_rate: z.number().int().min(60).max(220).nullable().optional(),
+    notes: z.string().max(4000).nullable().optional(),
+    next_visit_date: z.string().regex(ISO_DATE).nullable().optional(),
+  })
+  .strict();
+
+async function loadVisitOfMother(db: D1Database, motherId: string, visitId: string): Promise<Record<string, unknown>> {
+  const v = await db
+    .prepare(
+      `SELECT v.*, p.mother_id AS mother_id FROM visits v JOIN pregnancies p ON p.id = v.pregnancy_id
+        WHERE v.id = ? AND v.deleted_at IS NULL`,
+    )
+    .bind(visitId)
+    .first<Record<string, unknown>>();
+  if (!v || v.mother_id !== motherId) throw new HttpError(404, 'visit_not_found', 'Visit not found for this patient');
+  return v;
+}
+
+patientRoutes.patch('/patients/:motherId/visits/:visitId', async (c) => {
+  const motherId = c.req.param('motherId');
+  const visitId = c.req.param('visitId');
+  const staffId = c.get('user').id;
+  const db = c.env.DB;
+  await requireMotherAccess(db, staffId, motherId);
+  const v = await loadVisitOfMother(db, motherId, visitId);
+
+  const own = await db
+    .prepare(
+      `SELECT 1 AS ok FROM care_links cl JOIN staff_memberships sm ON sm.facility_id = cl.facility_id
+        WHERE cl.mother_id = ?1 AND cl.facility_id = ?2 AND cl.revoked_at IS NULL
+          AND sm.user_id = ?3 AND sm.status = 'verified' LIMIT 1`,
+    )
+    .bind(motherId, v.facility_id, staffId)
+    .first();
+  if (!own) throw new HttpError(403, 'no_access', 'Only staff of the facility that recorded this visit can edit it');
+
+  const patch = (await parseBody(c, visitPatchSchema)) as Record<string, unknown>;
+  const keys = EDITABLE.filter((k) => k in patch);
+  if (keys.length === 0) throw new HttpError(400, 'empty_patch', 'Nothing to change');
+
+  const merged: Record<string, unknown> = { ...v };
+  for (const k of keys) merged[k] = patch[k] ?? null;
+  const sys = (merged.systolic as number | null) ?? null;
+  const dia = (merged.diastolic as number | null) ?? null;
+  if ((sys === null) !== (dia === null)) throw new HttpError(400, 'bp_incomplete', 'Enter both blood pressure numbers, or neither');
+  const risk = readingRisk(sys, dia);
+
+  const t = now();
+  const previous = Object.fromEntries(EDITABLE.map((k) => [k, v[k] ?? null]));
+  await db.batch([
+    db
+      .prepare('INSERT INTO visit_revisions (id, visit_id, edited_by, edited_at, previous_json) VALUES (?,?,?,?,?)')
+      .bind(uuid(), visitId, staffId, t, JSON.stringify(previous)),
+    db
+      .prepare(`UPDATE visits SET ${keys.map((k) => `${k} = ?`).join(', ')}, risk_flag = ?, updated_at = ?, server_updated_at = ? WHERE id = ?`)
+      .bind(...keys.map((k) => patch[k] ?? null), risk, t, t, visitId),
+  ]);
+  await audit(db, { actor: staffId, action: 'edit_visit', facilityId: v.facility_id as string, motherId, entity: 'visit', entityId: visitId });
+  return c.json({ ok: true, risk_flag: risk });
+});
+
+patientRoutes.get('/patients/:motherId/visits/:visitId/revisions', async (c) => {
+  const motherId = c.req.param('motherId');
+  const visitId = c.req.param('visitId');
+  const db = c.env.DB;
+  await requireMotherAccess(db, c.get('user').id, motherId);
+  await loadVisitOfMother(db, motherId, visitId);
+  const { results } = await db
+    .prepare(
+      `SELECT r.id, r.edited_at, u.full_name AS edited_by_name, r.previous_json
+         FROM visit_revisions r JOIN users u ON u.id = r.edited_by
+        WHERE r.visit_id = ? ORDER BY r.edited_at DESC`,
+    )
+    .bind(visitId)
+    .all<{ id: string; edited_at: number; edited_by_name: string; previous_json: string }>();
+  return c.json({
+    revisions: results.map((r) => ({ id: r.id, edited_at: r.edited_at, edited_by_name: r.edited_by_name, previous: JSON.parse(r.previous_json) })),
+  });
+});
