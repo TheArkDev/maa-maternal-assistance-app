@@ -5,6 +5,7 @@ import { authRoutes } from './routes/auth';
 import { careRoutes } from './routes/care';
 import { facilityRoutes } from './routes/facilities';
 import { patientRoutes } from './routes/patients';
+import { profileRoutes } from './routes/profile';
 import { syncRoutes } from './routes/sync';
 import type { AppEnv } from './types';
 import { HttpError } from './util';
@@ -20,6 +21,7 @@ app.route('/', patientRoutes);
 app.route('/', syncRoutes);
 app.route('/', assessRoutes);
 app.route('/', adminRoutes);
+app.route('/', profileRoutes);
 
 app.notFound((c) => c.json({ error: { code: 'not_found', message: 'Route not found' } }, 404));
 
