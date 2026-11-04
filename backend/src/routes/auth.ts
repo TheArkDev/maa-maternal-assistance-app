@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { hashPassword, randomToken, sha256Hex, signJwt, verifyPassword } from '../auth';
 import { authenticate } from '../middleware';
+import { FIFTEEN_MINUTES, clearRateLimit, hitRateLimit, rateLimited } from '../ratelimit';
 import type { AppEnv } from '../types';
 import { HttpError, ISO_DATE, normalizeKePhone, now, parseBody, uuid } from '../util';
 
@@ -17,6 +18,7 @@ const mothersSchema = z.object({
   full_name: z.string().min(2).max(120),
   password: z.string().min(8).max(200),
   date_of_birth: z.string().regex(ISO_DATE).optional(),
+  accept_terms: z.boolean().optional(), // consent to keep her records; the app sends it from now on
   ...contact,
 });
 
@@ -40,18 +42,18 @@ const staffSchema = z.object({
 const loginSchema = z.object({ identifier: z.string().min(3).max(200), password: z.string().min(1).max(200) });
 const refreshSchema = z.object({ refresh_token: z.string().min(10).max(200) });
 
-function resolveContact(email?: string, phone?: string) {
+export function resolveContact(email?: string, phone?: string, opts: { required?: boolean } = {}) {
   const e = email?.trim().toLowerCase() || null;
   let p: string | null = null;
   if (phone?.trim()) {
     p = normalizeKePhone(phone);
     if (!p) throw new HttpError(400, 'invalid_phone', 'Enter a valid Kenyan mobile number, e.g. 0712 345 678');
   }
-  if (!e && !p) throw new HttpError(400, 'contact_required', 'Provide a phone number or an email address');
+  if (!e && !p && opts.required !== false) throw new HttpError(400, 'contact_required', 'Provide a phone number or an email address');
   return { email: e, phone: p };
 }
 
-async function issueTokens(db: D1Database, secret: string, user: { id: string; role: 'mother' | 'staff'; full_name: string }) {
+export async function issueTokens(db: D1Database, secret: string, user: { id: string; role: 'mother' | 'staff'; full_name: string }) {
   const accessToken = await signJwt({ sub: user.id, role: user.role }, secret, ACCESS_TTL_SECONDS);
   const refreshToken = randomToken(32);
   await db
@@ -66,7 +68,7 @@ async function issueTokens(db: D1Database, secret: string, user: { id: string; r
   };
 }
 
-function isUniqueError(e: unknown): boolean {
+export function isUniqueError(e: unknown): boolean {
   return e instanceof Error && /UNIQUE constraint failed/i.test(e.message);
 }
 
@@ -84,8 +86,8 @@ authRoutes.post('/auth/register/mother', async (c) => {
          VALUES (?, 'mother', ?, ?, ?, ?, ?, ?)`,
       ).bind(userId, email, phone, await hashPassword(body.password), body.full_name.trim(), t, t),
       c.env.DB.prepare(
-        `INSERT INTO mothers (id, user_id, date_of_birth, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
-      ).bind(uuid(), userId, body.date_of_birth ?? null, t, t),
+        `INSERT INTO mothers (id, user_id, date_of_birth, consent_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
+      ).bind(uuid(), userId, body.date_of_birth ?? null, body.accept_terms ? t : null, t, t),
     ]);
   } catch (e) {
     if (isUniqueError(e)) throw new HttpError(409, 'account_exists', 'An account with this phone or email already exists');
@@ -156,8 +158,19 @@ authRoutes.post('/auth/login', async (c) => {
     .prepare('SELECT id, role, full_name, password_hash FROM users WHERE email = ?1 OR (?2 IS NOT NULL AND phone = ?2)')
     .bind(id.toLowerCase(), phone)
     .first<{ id: string; role: 'mother' | 'staff'; full_name: string; password_hash: string }>();
+
+  // Lock an account (or an unknown identifier) after repeated failures. Costs an attacker time and costs a
+  // legitimate user at most 15 minutes, or a reset code from their clinic.
+  const key = user ? `login:u:${user.id}` : `login:x:${id.toLowerCase()}`;
+  if (await rateLimited(c.env.DB, key, 8, FIFTEEN_MINUTES)) {
+    throw new HttpError(429, 'too_many_attempts', 'Too many attempts. Try again in 15 minutes, or ask your clinic for a reset code.');
+  }
   const ok = await verifyPassword(password, user?.password_hash ?? DUMMY_HASH);
-  if (!user || !ok) throw new HttpError(401, 'invalid_credentials', 'Incorrect phone/email or password');
+  if (!user || !ok) {
+    await hitRateLimit(c.env.DB, key, FIFTEEN_MINUTES);
+    throw new HttpError(401, 'invalid_credentials', 'Incorrect phone/email or password');
+  }
+  await clearRateLimit(c.env.DB, key);
   return c.json(await issueTokens(c.env.DB, c.env.JWT_SECRET, user));
 });
 
