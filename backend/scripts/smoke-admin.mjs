@@ -14,6 +14,7 @@ async function call(method, path, { token, body } = {}) {
 }
 const check = (name, cond, extra) => { cond ? (pass++, console.log('  ok  ', name)) : (fail++, console.log('  FAIL', name, extra !== undefined ? JSON.stringify(extra) : '')); };
 const tag = Date.now().toString().slice(-6);
+const uidZero = '00000000-0000-0000-0000-000000000000';
 
 console.log('Platform admin');
 let r = await call('POST', '/auth/login', { body: { identifier: process.env.ADMIN_IDENTIFIER, password: process.env.ADMIN_PASSWORD } });
@@ -78,6 +79,17 @@ r = await call('POST', `/admin/facilities/00000000-0000-0000-0000-000000000000/d
 check('unknown facility -> 404', r.status === 404, r);
 r = await call('POST', `/admin/facilities/${a.membership.facility_id}/decision`, { token: admin.access_token, body: { decision: 'maybe' } });
 check('invalid decision -> 400', r.status === 400, r);
+
+console.log('Platform admin password recovery');
+const founderUserId = (await call('GET', '/me', { token: a.access_token })).json.user.id;
+r = await call('POST', `/admin/users/${founderUserId}/reset-code`, { token: a.access_token });
+check('a facility founder cannot use the platform-admin reset -> 403', r.status === 403, r);
+r = await call('POST', `/admin/users/${founderUserId}/reset-code`, { token: admin.access_token });
+check('platform admin issues a reset code for a locked-out facility admin', r.status === 200 && /-/.test(r.json.code), r);
+r = await call('POST', '/auth/reset-password', { body: { identifier: `Alpha${tag}@example.com`.toLowerCase(), code: r.json.code, new_password: 'brandnewpass1' } });
+check('the facility admin resets and is back in', r.status === 200, r);
+r = await call('POST', `/admin/users/${uidZero}/reset-code`, { token: admin.access_token });
+check('unknown user -> 404', r.status === 404, r);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
