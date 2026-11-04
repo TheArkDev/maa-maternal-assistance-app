@@ -1,11 +1,13 @@
 import { Hono } from 'hono';
 import { adminRoutes } from './routes/admin';
+import { alertRoutes } from './routes/alerts';
 import { assessRoutes } from './routes/assess';
 import { authRoutes } from './routes/auth';
 import { careRoutes } from './routes/care';
 import { facilityRoutes } from './routes/facilities';
 import { patientRoutes } from './routes/patients';
 import { profileRoutes } from './routes/profile';
+import { recoveryRoutes } from './routes/recovery';
 import { syncRoutes } from './routes/sync';
 import type { AppEnv } from './types';
 import { HttpError } from './util';
@@ -22,6 +24,8 @@ app.route('/', syncRoutes);
 app.route('/', assessRoutes);
 app.route('/', adminRoutes);
 app.route('/', profileRoutes);
+app.route('/', recoveryRoutes);
+app.route('/', alertRoutes);
 
 app.notFound((c) => c.json({ error: { code: 'not_found', message: 'Route not found' } }, 404));
 
